@@ -4,9 +4,6 @@ typically faster than the same operations as provided in `std::path`. In
 particular, we really want to avoid the costly operation of parsing the path
 into its constituent components. We give up on Windows, but on Unix, we deal
 with the raw bytes directly.
-
-On large repositories (like chromium), this can have a ~25% performance
-improvement on just listing the files to search (!).
 */
 use std::path::Path;
 

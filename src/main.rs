@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_mut, unused_variables)]
+
 extern crate atty;
 extern crate bytecount;
 #[macro_use]
@@ -6,6 +8,7 @@ extern crate encoding_rs;
 extern crate encoding_rs_io;
 extern crate globset;
 extern crate grep;
+extern crate grep2;
 extern crate ignore;
 #[macro_use]
 extern crate lazy_static;
@@ -39,31 +42,40 @@ macro_rules! errored {
     }
 }
 
+#[macro_use]
+mod messages;
+
 mod app;
 mod args;
+mod args2;
 mod config;
 mod decompressor;
 mod preprocessor;
 mod logger;
+mod main2;
+mod path_printer;
 mod pathutil;
 mod printer;
+mod search;
 mod search_buffer;
 mod search_stream;
+mod subject;
 mod unescape;
 mod worker;
 
 pub type Result<T> = result::Result<T, Box<Error>>;
 
 fn main() {
-    reset_sigpipe();
-    match Args::parse().map(Arc::new).and_then(run) {
-        Ok(0) => process::exit(1),
-        Ok(_) => process::exit(0),
-        Err(err) => {
-            eprintln!("{}", err);
-            process::exit(2);
-        }
-    }
+    main2::main2();
+    // reset_sigpipe();
+    // match Args::parse().map(Arc::new).and_then(run) {
+        // Ok(0) => process::exit(1),
+        // Ok(_) => process::exit(0),
+        // Err(err) => {
+            // eprintln!("{}", err);
+            // process::exit(2);
+        // }
+    // }
 }
 
 fn run(args: Arc<Args>) -> Result<u64> {
@@ -113,8 +125,6 @@ fn run_parallel(args: &Arc<Args>) -> Result<u64> {
                 result,
                 args.stdout_handle(),
                 args.files(),
-                args.no_messages(),
-                args.no_ignore_messages(),
             ) {
                 None => return Continue,
                 Some(dent) => dent,
@@ -145,10 +155,8 @@ fn run_parallel(args: &Arc<Args>) -> Result<u64> {
             Continue
         })
     });
-    if !args.paths().is_empty() && paths_searched.load(Ordering::SeqCst) == 0 {
-        if !args.no_messages() {
-            eprint_nothing_searched();
-        }
+    if paths_searched.load(Ordering::SeqCst) == 0 {
+        eprint_nothing_searched();
     }
     let match_line_count = match_line_count.load(Ordering::SeqCst) as u64;
     let paths_searched = paths_searched.load(Ordering::SeqCst) as u64;
@@ -176,8 +184,6 @@ fn run_one_thread(args: &Arc<Args>) -> Result<u64> {
             result,
             args.stdout_handle(),
             args.files(),
-            args.no_messages(),
-            args.no_ignore_messages(),
         ) {
             None => continue,
             Some(dent) => dent,
@@ -203,10 +209,8 @@ fn run_one_thread(args: &Arc<Args>) -> Result<u64> {
             paths_matched += 1;
         }
     }
-    if !args.paths().is_empty() && paths_searched == 0 {
-        if !args.no_messages() {
-            eprint_nothing_searched();
-        }
+    if paths_searched == 0 {
+        eprint_nothing_searched();
     }
     if args.stats() {
         print_stats(
@@ -241,8 +245,6 @@ fn run_files_parallel(args: Arc<Args>) -> Result<u64> {
                 result,
                 args.stdout_handle(),
                 args.files(),
-                args.no_messages(),
-                args.no_ignore_messages(),
             ) {
                 tx.send(dent).unwrap();
                 if args.quiet() {
@@ -263,8 +265,6 @@ fn run_files_one_thread(args: &Arc<Args>) -> Result<u64> {
             result,
             args.stdout_handle(),
             args.files(),
-            args.no_messages(),
-            args.no_ignore_messages(),
         ) {
             None => continue,
             Some(dent) => dent,
@@ -293,21 +293,15 @@ fn get_or_log_dir_entry(
     result: result::Result<ignore::DirEntry, ignore::Error>,
     stdout_handle: Option<&same_file::Handle>,
     files_only: bool,
-    no_messages: bool,
-    no_ignore_messages: bool,
 ) -> Option<ignore::DirEntry> {
     match result {
         Err(err) => {
-            if !no_messages {
-                eprintln!("{}", err);
-            }
+            message!("{}", err);
             None
         }
         Ok(dent) => {
             if let Some(err) = dent.error() {
-                if !no_messages && !no_ignore_messages {
-                    eprintln!("{}", err);
-                }
+                ignore_message!("{}", err);
             }
             if dent.file_type().is_none() {
                 return Some(dent); // entry is stdin
@@ -321,7 +315,7 @@ fn get_or_log_dir_entry(
             }
             // If we are redirecting stdout to a file, then don't search that
             // file.
-            if !files_only && is_stdout_file(&dent, stdout_handle, no_messages) {
+            if !files_only && is_stdout_file(&dent, stdout_handle) {
                 return None;
             }
             Some(dent)
@@ -371,7 +365,6 @@ fn ignore_entry_is_file(dent: &ignore::DirEntry) -> bool {
 fn is_stdout_file(
     dent: &ignore::DirEntry,
     stdout_handle: Option<&same_file::Handle>,
-    no_messages: bool,
 ) -> bool {
     let stdout_handle = match stdout_handle {
         None => return false,
@@ -385,9 +378,7 @@ fn is_stdout_file(
     match same_file::Handle::from_path(dent.path()) {
         Ok(h) => stdout_handle == &h,
         Err(err) => {
-            if !no_messages {
-                eprintln!("{}: {}", dent.path().display(), err);
-            }
+            message!("{}: {}", dent.path().display(), err);
             false
         }
     }
@@ -407,9 +398,10 @@ fn maybe_dent_eq_handle(_: &ignore::DirEntry, _: &same_file::Handle) -> bool {
 }
 
 fn eprint_nothing_searched() {
-    eprintln!("No files were searched, which means ripgrep probably \
-               applied a filter you didn't expect. \
-               Try running again with --debug.");
+    message!(
+        "No files were searched, which means ripgrep probably \
+         applied a filter you didn't expect. \
+         Try running again with --debug.");
 }
 
 fn print_stats(
