@@ -2,10 +2,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use grep2::matcher::Matcher;
-use grep2::printer::{JSON, Standard, Summary, Stats};
-use grep2::regex::RegexMatcher;
-use grep2::searcher::Searcher;
+use grep::matcher::Matcher;
+use grep::printer::{JSON, Standard, Summary, Stats};
+use grep::regex::RegexMatcher;
+use grep::searcher::Searcher;
 use termcolor::WriteColor;
 
 use decompressor::{DecompressionReader, is_compressed};
@@ -95,7 +95,6 @@ impl SearchWorkerBuilder {
 #[derive(Clone, Debug, Default)]
 pub struct SearchResult {
     has_match: bool,
-    binary_byte_offset: Option<u64>,
     stats: Option<Stats>,
 }
 
@@ -103,15 +102,6 @@ impl SearchResult {
     /// Whether the search found a match or not.
     pub fn has_match(&self) -> bool {
         self.has_match
-    }
-
-    /// Whether the search found binary data, and if so, the first absolute
-    /// byte offset at which it was detected.
-    ///
-    /// This always returns `None` if binary data detection is disabled, even
-    /// when binary data is present.
-    pub fn binary_byte_offset(&self) -> Option<u64> {
-        self.binary_byte_offset
     }
 
     /// Return aggregate search statistics for a single search, if available.
@@ -168,10 +158,8 @@ impl<W: WriteColor> Printer<W> {
         total_duration: Duration,
         stats: &Stats,
     ) -> io::Result<()> {
-        let mut wtr = self.get_mut();
-
         write!(
-            wtr,
+            self.get_mut(),
             "
 {matches} matches
 {lines} matched lines
@@ -295,9 +283,7 @@ fn search_path<M: Matcher, W: WriteColor>(
             searcher.search_path(&matcher, path, &mut sink)?;
             Ok(SearchResult {
                 has_match: sink.has_match(),
-                binary_byte_offset: sink.binary_byte_offset(),
                 stats: sink.stats().map(|s| s.clone()),
-                ..SearchResult::default()
             })
         }
         Printer::Summary(ref mut p) => {
@@ -305,9 +291,7 @@ fn search_path<M: Matcher, W: WriteColor>(
             searcher.search_path(&matcher, path, &mut sink)?;
             Ok(SearchResult {
                 has_match: sink.has_match(),
-                binary_byte_offset: sink.binary_byte_offset(),
                 stats: sink.stats().map(|s| s.clone()),
-                ..SearchResult::default()
             })
         }
         Printer::JSON(ref mut p) => {
@@ -315,9 +299,7 @@ fn search_path<M: Matcher, W: WriteColor>(
             searcher.search_path(&matcher, path, &mut sink)?;
             Ok(SearchResult {
                 has_match: sink.has_match(),
-                binary_byte_offset: sink.binary_byte_offset(),
                 stats: Some(sink.stats().clone()),
-                ..SearchResult::default()
             })
         }
     }
@@ -338,9 +320,7 @@ fn search_reader<M: Matcher, R: io::Read, W: WriteColor>(
             searcher.search_reader(&matcher, rdr, &mut sink)?;
             Ok(SearchResult {
                 has_match: sink.has_match(),
-                binary_byte_offset: sink.binary_byte_offset(),
                 stats: sink.stats().map(|s| s.clone()),
-                ..SearchResult::default()
             })
         }
         Printer::Summary(ref mut p) => {
@@ -348,9 +328,7 @@ fn search_reader<M: Matcher, R: io::Read, W: WriteColor>(
             searcher.search_reader(&matcher, rdr, &mut sink)?;
             Ok(SearchResult {
                 has_match: sink.has_match(),
-                binary_byte_offset: sink.binary_byte_offset(),
                 stats: sink.stats().map(|s| s.clone()),
-                ..SearchResult::default()
             })
         }
         Printer::JSON(ref mut p) => {
@@ -358,9 +336,7 @@ fn search_reader<M: Matcher, R: io::Read, W: WriteColor>(
             searcher.search_reader(&matcher, rdr, &mut sink)?;
             Ok(SearchResult {
                 has_match: sink.has_match(),
-                binary_byte_offset: sink.binary_byte_offset(),
                 stats: Some(sink.stats().clone()),
-                ..SearchResult::default()
             })
         }
     }

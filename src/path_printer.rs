@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use grep2::printer::{ColorSpecs, PrinterPath};
+use grep::printer::{ColorSpecs, PrinterPath};
 use termcolor::WriteColor;
 
 /// A configuration for describing how paths should be written.
