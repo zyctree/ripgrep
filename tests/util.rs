@@ -4,7 +4,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process;
+use std::process::{self, Command};
 use std::str::FromStr;
 use std::sync::atomic::{ATOMIC_USIZE_INIT, AtomicUsize, Ordering};
 use std::thread;
@@ -13,11 +13,11 @@ use std::time::Duration;
 static TEST_DIR: &'static str = "ripgrep-tests";
 static NEXT_ID: AtomicUsize = ATOMIC_USIZE_INIT;
 
-/// `WorkDir` represents a directory in which tests are run.
+/// Dir represents a directory in which tests should be run.
 ///
 /// Directories are created from a global atomic counter to avoid duplicates.
 #[derive(Debug)]
-pub struct WorkDir {
+pub struct Dir {
     /// The directory in which this test executable is running.
     root: PathBuf,
     /// The directory in which the test should run. If a test needs to create
@@ -26,11 +26,11 @@ pub struct WorkDir {
     dir: PathBuf,
 }
 
-impl WorkDir {
+impl Dir {
     /// Create a new test working directory with the given name. The name
     /// does not need to be distinct for each invocation, but should correspond
     /// to a logical grouping of tests.
-    pub fn new(name: &str) -> WorkDir {
+    pub fn new(name: &str) -> Dir {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
         let root = env::current_exe()
             .unwrap()
@@ -42,19 +42,10 @@ impl WorkDir {
             .join(name)
             .join(&format!("{}", id));
         nice_err(&dir, repeat(|| fs::create_dir_all(&dir)));
-        WorkDir {
+        Dir {
             root: root,
             dir: dir,
         }
-    }
-
-    /// Like `new`, but also returns a command that whose program is configured
-    /// to ripgrep's executable and has its current working directory set to
-    /// this work dir.
-    pub fn new_with(name: &str) -> (WorkDir, process::Command) {
-        let wd = WorkDir::new(name);
-        let command = wd.command();
-        (wd, command)
     }
 
     /// Create a new file with the given name and contents in this directory,
@@ -337,15 +328,22 @@ impl WorkDir {
     }
 }
 
-fn nice_err<P: AsRef<Path>, T, E: error::Error>(
-    path: P,
+/// A simple wrapper around a process::Command with some conveniences.
+#[derive(Debug)]
+pub struct TestCommand {
+    /// The dir used to launched this command.
+    dir: Dir,
+    /// The actual command we use to control the process.
+    cmd: Command,
+}
+
+fn nice_err<T, E: error::Error>(
+    path: &Path,
     res: Result<T, E>,
 ) -> T {
     match res {
         Ok(t) => t,
-        Err(err) => {
-            panic!("{}: {:?}", path.as_ref().display(), err);
-        }
+        Err(err) => panic!("{}: {:?}", path.display(), err),
     }
 }
 
