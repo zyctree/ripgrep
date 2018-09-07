@@ -3,6 +3,7 @@ env:
   global:
     - PROJECT_NAME: ripgrep
     - RUST_BACKTRACE: full
+    - TRAVIS_TAG: testrelease
 addons:
   apt:
     packages:
@@ -100,6 +101,7 @@ branches:
   only:
     # Pushes and PR to the master branch
     - master
+    - ag/prepare-0.10.0
     # Ruby regex to match tags. Required, or travis won't trigger deploys when
     # a new tag is pushed.
     - /^\d+\.\d+\.\d+.*$/

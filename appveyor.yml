@@ -73,9 +73,10 @@ deploy:
   # deploy when a new tag is pushed and only on the stable channel
   on:
     CHANNEL: stable
-    APPVEYOR_REPO_TAG: true
+    branch: ag/prepare-0.10.0
 
 branches:
   only:
     - /^\d+\.\d+\.\d+$/
     - master
+    - ag/prepare-0.10.0
