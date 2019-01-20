@@ -38,12 +38,14 @@ implementations.
 
 #![deny(missing_docs)]
 
-extern crate memchr;
+extern crate bstr;
 
 use std::fmt;
 use std::io;
 use std::ops;
 use std::u64;
+
+use bstr::BStr;
 
 use interpolate::interpolate;
 
@@ -176,6 +178,22 @@ impl ops::Index<Match> for [u8] {
 impl ops::IndexMut<Match> for [u8] {
     #[inline]
     fn index_mut(&mut self, index: Match) -> &mut [u8] {
+        &mut self[index.start..index.end]
+    }
+}
+
+impl ops::Index<Match> for BStr {
+    type Output = BStr;
+
+    #[inline]
+    fn index(&self, index: Match) -> &BStr {
+        &self[index.start..index.end]
+    }
+}
+
+impl ops::IndexMut<Match> for BStr {
+    #[inline]
+    fn index_mut(&mut self, index: Match) -> &mut BStr {
         &mut self[index.start..index.end]
     }
 }

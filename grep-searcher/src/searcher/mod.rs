@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
+use bstr::{B, BStr, BString};
 use encoding_rs;
 use encoding_rs_io::DecodeReaderBytesBuilder;
 use grep_matcher::{LineTerminator, Match, Matcher};
@@ -311,9 +312,9 @@ impl SearcherBuilder {
         Searcher {
             config: config,
             decode_builder: decode_builder,
-            decode_buffer: RefCell::new(vec![0; 8 * (1<<10)]),
+            decode_buffer: RefCell::new(BString::from(vec![0; 8 * (1<<10)])),
             line_buffer: RefCell::new(self.config.line_buffer()),
-            multi_line_buffer: RefCell::new(vec![]),
+            multi_line_buffer: RefCell::new(BString::new()),
         }
     }
 
@@ -543,7 +544,7 @@ pub struct Searcher {
     /// through the underlying bytes with no additional overhead.
     decode_builder: DecodeReaderBytesBuilder,
     /// A buffer that is used for transcoding scratch space.
-    decode_buffer: RefCell<Vec<u8>>,
+    decode_buffer: RefCell<BString>,
     /// A line buffer for use in line oriented searching.
     ///
     /// We wrap it in a RefCell to permit lending out borrows of `Searcher`
@@ -555,7 +556,7 @@ pub struct Searcher {
     /// multi line search. In particular, multi line searches cannot be
     /// performed incrementally, and need the entire haystack in memory at
     /// once.
-    multi_line_buffer: RefCell<Vec<u8>>,
+    multi_line_buffer: RefCell<BString>,
 }
 
 impl Searcher {
@@ -666,7 +667,7 @@ impl Searcher {
 
         let mut decode_buffer = self.decode_buffer.borrow_mut();
         let read_from = self.decode_builder
-            .build_with_buffer(read_from, &mut *decode_buffer)
+            .build_with_buffer(read_from, decode_buffer.as_mut_vec())
             .map_err(S::Error::error_io)?;
 
         if self.multi_line_with_matcher(&matcher) {
@@ -698,12 +699,13 @@ impl Searcher {
     where M: Matcher,
           S: Sink,
     {
+        let slice = B(slice);
         self.check_config(&matcher).map_err(S::Error::error_config)?;
 
         // We can search the slice directly, unless we need to do transcoding.
         if self.slice_needs_transcoding(slice) {
             trace!("slice reader: needs transcoding, using generic reader");
-            return self.search_reader(matcher, slice, write_to);
+            return self.search_reader(matcher, slice.as_bytes(), write_to);
         }
         if self.multi_line_with_matcher(&matcher) {
             trace!("slice reader: searching via multiline strategy");
@@ -736,7 +738,7 @@ impl Searcher {
     }
 
     /// Returns true if and only if the given slice needs to be transcoded.
-    fn slice_needs_transcoding(&self, slice: &[u8]) -> bool {
+    fn slice_needs_transcoding(&self, slice: &BStr) -> bool {
         self.config.encoding.is_some() || slice_has_utf16_bom(slice)
     }
 }
@@ -851,7 +853,9 @@ impl Searcher {
                 .map(|m| m.len() as usize + 1)
                 .unwrap_or(0);
             buf.reserve(cap);
-            read_from.read_to_end(&mut *buf).map_err(S::Error::error_io)?;
+            read_from
+                .read_to_end(buf.as_mut_vec())
+                .map_err(S::Error::error_io)?;
             return Ok(());
         }
         self.fill_multi_line_buffer_from_reader::<_, S>(read_from)
@@ -868,6 +872,7 @@ impl Searcher {
         assert!(self.config.multi_line);
 
         let mut buf = self.multi_line_buffer.borrow_mut();
+        let buf = buf.as_mut_vec();
         buf.clear();
 
         // If we don't have a heap limit, then we can defer to std's
@@ -919,8 +924,8 @@ impl Searcher {
 ///
 /// This is used by the searcher to determine if a transcoder is necessary.
 /// Otherwise, it is advantageous to search the slice directly.
-fn slice_has_utf16_bom(slice: &[u8]) -> bool {
-    let enc = match encoding_rs::Encoding::for_bom(slice) {
+fn slice_has_utf16_bom(slice: &BStr) -> bool {
+    let enc = match encoding_rs::Encoding::for_bom(slice.as_bytes()) {
         None => return false,
         Some((enc, _)) => enc,
     };

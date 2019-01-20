@@ -13,8 +13,11 @@ keywords = ["regex", "pattern", "trait"]
 license = "Unlicense/MIT"
 autotests = false
 
-[dependencies]
-memchr = "2.1"
+[dependencies.bstr]
+version = "*"
+path = "/home/andrew/rust/bstr"
+default-features = false
+features = ["std"]
 
 [dev-dependencies]
 regex = "1.1"

@@ -1,6 +1,6 @@
 use std::str;
 
-use memchr::memchr;
+use bstr::B;
 
 /// Interpolate capture references in `replacement` and write the interpolation
 /// result to `dst`. References in `replacement` take the form of $N or $name,
@@ -22,7 +22,7 @@ pub fn interpolate<A, N>(
     N: FnMut(&str) -> Option<usize>
 {
     while !replacement.is_empty() {
-        match memchr(b'$', replacement) {
+        match B(replacement).find_byte(b'$') {
             None => break,
             Some(i) => {
                 dst.extend(&replacement[..i]);

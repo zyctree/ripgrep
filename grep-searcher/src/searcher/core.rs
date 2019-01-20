@@ -1,6 +1,6 @@
 use std::cmp;
 
-use memchr::memchr;
+use bstr::BStr;
 
 use grep_matcher::{LineMatchKind, Matcher};
 use lines::{self, LineStep};
@@ -84,7 +84,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
 
     pub fn matched(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
         range: &Range,
     ) -> Result<bool, S::Error> {
         self.sink_matched(buf, range)
@@ -107,7 +107,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
             })
     }
 
-    pub fn match_by_line(&mut self, buf: &[u8]) -> Result<bool, S::Error> {
+    pub fn match_by_line(&mut self, buf: &BStr) -> Result<bool, S::Error> {
         if self.is_line_by_line_fast() {
             self.match_by_line_fast(buf)
         } else {
@@ -115,7 +115,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
         }
     }
 
-    pub fn roll(&mut self, buf: &[u8]) -> usize {
+    pub fn roll(&mut self, buf: &BStr) -> usize {
         let consumed =
             if self.config.max_context() == 0 {
                 buf.len()
@@ -141,7 +141,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
         consumed
     }
 
-    pub fn detect_binary(&mut self, buf: &[u8], range: &Range) -> bool {
+    pub fn detect_binary(&mut self, buf: &BStr, range: &Range) -> bool {
         if self.binary_byte_offset.is_some() {
             return true;
         }
@@ -149,7 +149,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
             BinaryDetection::Quit(b) => b,
             _ => return false,
         };
-        if let Some(i) = memchr(binary_byte, &buf[*range]) {
+        if let Some(i) = buf[*range].find_byte(binary_byte) {
             self.binary_byte_offset = Some(range.start() + i);
             true
         } else {
@@ -159,7 +159,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
 
     pub fn before_context_by_line(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
         upto: usize,
     ) -> Result<bool, S::Error> {
         if self.config.before_context == 0 {
@@ -194,7 +194,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
 
     pub fn after_context_by_line(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
         upto: usize,
     ) -> Result<bool, S::Error> {
         if self.after_context_left == 0 {
@@ -219,7 +219,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
 
     pub fn other_context_by_line(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
         upto: usize,
     ) -> Result<bool, S::Error> {
         let range = Range::new(self.last_line_visited, upto);
@@ -236,7 +236,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
         Ok(true)
     }
 
-    fn match_by_line_slow(&mut self, buf: &[u8]) -> Result<bool, S::Error> {
+    fn match_by_line_slow(&mut self, buf: &BStr) -> Result<bool, S::Error> {
         debug_assert!(!self.searcher.multi_line_with_matcher(&self.matcher));
 
         let range = Range::new(self.pos(), buf.len());
@@ -255,7 +255,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
                     &buf[line],
                     self.config.line_term,
                 );
-                match self.matcher.shortest_match(slice) {
+                match self.matcher.shortest_match(slice.as_bytes()) {
                     Err(err) => return Err(S::Error::error_message(err)),
                     Ok(result) => result.is_some(),
                 }
@@ -281,7 +281,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
         Ok(true)
     }
 
-    fn match_by_line_fast(&mut self, buf: &[u8]) -> Result<bool, S::Error> {
+    fn match_by_line_fast(&mut self, buf: &BStr) -> Result<bool, S::Error> {
         debug_assert!(!self.config.passthru);
 
         while !buf[self.pos()..].is_empty() {
@@ -316,7 +316,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
     #[inline(always)]
     fn match_by_line_fast_invert(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
     ) -> Result<bool, S::Error> {
         assert!(self.config.invert_match);
 
@@ -357,14 +357,14 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
     #[inline(always)]
     fn find_by_line_fast(
         &self,
-        buf: &[u8],
+        buf: &BStr,
     ) -> Result<Option<Range>, S::Error> {
         debug_assert!(!self.searcher.multi_line_with_matcher(&self.matcher));
         debug_assert!(self.is_line_by_line_fast());
 
         let mut pos = self.pos();
         while !buf[pos..].is_empty() {
-            match self.matcher.find_candidate_line(&buf[pos..]) {
+            match self.matcher.find_candidate_line(buf[pos..].as_bytes()) {
                 Err(err) => return Err(S::Error::error_message(err)),
                 Ok(None) => return Ok(None),
                 Ok(Some(LineMatchKind::Confirmed(i))) => {
@@ -396,7 +396,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
                         &buf[line],
                         self.config.line_term,
                     );
-                    match self.matcher.is_match(slice) {
+                    match self.matcher.is_match(slice.as_bytes()) {
                         Err(err) => return Err(S::Error::error_message(err)),
                         Ok(true) => return Ok(Some(line)),
                         Ok(false) => {
@@ -413,7 +413,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
     #[inline(always)]
     fn sink_matched(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
         range: &Range,
     ) -> Result<bool, S::Error> {
         if self.binary && self.detect_binary(buf, range) {
@@ -438,7 +438,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
             &self.searcher,
             &SinkMatch {
                 line_term: self.config.line_term,
-                bytes: linebuf,
+                bytes: linebuf.as_bytes(),
                 absolute_byte_offset: offset,
                 line_number: self.line_number,
             },
@@ -454,7 +454,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
 
     fn sink_before_context(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
         range: &Range,
     ) -> Result<bool, S::Error> {
         if self.binary && self.detect_binary(buf, range) {
@@ -466,7 +466,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
             &self.searcher,
             &SinkContext {
                 line_term: self.config.line_term,
-                bytes: &buf[*range],
+                bytes: buf[*range].as_bytes(),
                 kind: SinkContextKind::Before,
                 absolute_byte_offset: offset,
                 line_number: self.line_number,
@@ -482,7 +482,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
 
     fn sink_after_context(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
         range: &Range,
     ) -> Result<bool, S::Error> {
         assert!(self.after_context_left >= 1);
@@ -496,7 +496,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
             &self.searcher,
             &SinkContext {
                 line_term: self.config.line_term,
-                bytes: &buf[*range],
+                bytes: buf[*range].as_bytes(),
                 kind: SinkContextKind::After,
                 absolute_byte_offset: offset,
                 line_number: self.line_number,
@@ -513,7 +513,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
 
     fn sink_other_context(
         &mut self,
-        buf: &[u8],
+        buf: &BStr,
         range: &Range,
     ) -> Result<bool, S::Error> {
         if self.binary && self.detect_binary(buf, range) {
@@ -525,7 +525,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
             &self.searcher,
             &SinkContext {
                 line_term: self.config.line_term,
-                bytes: &buf[*range],
+                bytes: buf[*range].as_bytes(),
                 kind: SinkContextKind::Other,
                 absolute_byte_offset: offset,
                 line_number: self.line_number,
@@ -555,7 +555,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
         }
     }
 
-    fn count_lines(&mut self, buf: &[u8], upto: usize) {
+    fn count_lines(&mut self, buf: &BStr, upto: usize) {
         if let Some(ref mut line_number) = self.line_number {
             if self.last_line_counted >= upto {
                 return;

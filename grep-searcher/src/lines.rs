@@ -2,8 +2,8 @@
 A collection of routines for performing operations on lines.
 */
 
+use bstr::{B, BStr};
 use bytecount;
-use memchr::{memchr, memrchr};
 use grep_matcher::{LineTerminator, Match};
 
 /// An iterator over lines in a particular slice of bytes.
@@ -14,7 +14,7 @@ use grep_matcher::{LineTerminator, Match};
 /// `'b` refers to the lifetime of the underlying bytes.
 #[derive(Debug)]
 pub struct LineIter<'b> {
-    bytes: &'b [u8],
+    bytes: &'b BStr,
     stepper: LineStep,
 }
 
@@ -23,7 +23,7 @@ impl<'b> LineIter<'b> {
     /// are terminated by `line_term`.
     pub fn new(line_term: u8, bytes: &'b [u8]) -> LineIter<'b> {
         LineIter {
-            bytes: bytes,
+            bytes: B(bytes),
             stepper: LineStep::new(line_term, 0, bytes.len()),
         }
     }
@@ -33,7 +33,7 @@ impl<'b> Iterator for LineIter<'b> {
     type Item = &'b [u8];
 
     fn next(&mut self) -> Option<&'b [u8]> {
-        self.stepper.next_match(self.bytes).map(|m| &self.bytes[m])
+        self.stepper.next_match(self.bytes).map(|m| self.bytes[m].as_bytes())
     }
 }
 
@@ -73,19 +73,19 @@ impl LineStep {
     /// The range returned includes the line terminator. Ranges are always
     /// non-empty.
     pub fn next(&mut self, bytes: &[u8]) -> Option<(usize, usize)> {
-        self.next_impl(bytes)
+        self.next_impl(B(bytes))
     }
 
     /// Like next, but returns a `Match` instead of a tuple.
     #[inline(always)]
-    pub(crate) fn next_match(&mut self, bytes: &[u8]) -> Option<Match> {
+    pub(crate) fn next_match(&mut self, bytes: &BStr) -> Option<Match> {
         self.next_impl(bytes).map(|(s, e)| Match::new(s, e))
     }
 
     #[inline(always)]
-    fn next_impl(&mut self, mut bytes: &[u8]) -> Option<(usize, usize)> {
+    fn next_impl(&mut self, mut bytes: &BStr) -> Option<(usize, usize)> {
         bytes = &bytes[..self.end];
-        match memchr(self.line_term, &bytes[self.pos..]) {
+        match bytes[self.pos..].find_byte(self.line_term) {
             None => {
                 if self.pos < bytes.len() {
                     let m = (self.pos, bytes.len());
@@ -109,15 +109,15 @@ impl LineStep {
 }
 
 /// Count the number of occurrences of `line_term` in `bytes`.
-pub fn count(bytes: &[u8], line_term: u8) -> u64 {
-    bytecount::count(bytes, line_term) as u64
+pub fn count(bytes: &BStr, line_term: u8) -> u64 {
+    bytecount::count(bytes.as_bytes(), line_term) as u64
 }
 
 /// Given a line that possibly ends with a terminator, return that line without
 /// the terminator.
 #[inline(always)]
-pub fn without_terminator(bytes: &[u8], line_term: LineTerminator) -> &[u8] {
-    let line_term = line_term.as_bytes();
+pub fn without_terminator(bytes: &BStr, line_term: LineTerminator) -> &BStr {
+    let line_term = BStr::new(line_term.as_bytes());
     let start = bytes.len().saturating_sub(line_term.len());
     if bytes.get(start..) == Some(line_term) {
         return &bytes[..bytes.len() - line_term.len()];
@@ -131,18 +131,20 @@ pub fn without_terminator(bytes: &[u8], line_term: LineTerminator) -> &[u8] {
 /// Line terminators are considered part of the line they terminate.
 #[inline(always)]
 pub fn locate(
-    bytes: &[u8],
+    bytes: &BStr,
     line_term: u8,
     range: Match,
 ) -> Match {
-    let line_start = memrchr(line_term, &bytes[0..range.start()])
+    let line_start = bytes[..range.start()]
+        .rfind_byte(line_term)
         .map_or(0, |i| i + 1);
     let line_end =
         if range.end() > line_start && bytes[range.end() - 1] == line_term {
             range.end()
         } else {
-            memchr(line_term, &bytes[range.end()..])
-            .map_or(bytes.len(), |i| range.end() + i + 1)
+            bytes[range.end()..]
+                .find_byte(line_term)
+                .map_or(bytes.len(), |i| range.end() + i + 1)
         };
     Match::new(line_start, line_end)
 }
@@ -155,7 +157,7 @@ pub fn locate(
 ///
 /// If `bytes` ends with a line terminator, then the terminator itself is
 /// considered part of the last line.
-pub fn preceding(bytes: &[u8], line_term: u8, count: usize) -> usize {
+pub fn preceding(bytes: &BStr, line_term: u8, count: usize) -> usize {
     preceding_by_pos(bytes, bytes.len(), line_term, count)
 }
 
@@ -169,7 +171,7 @@ pub fn preceding(bytes: &[u8], line_term: u8, count: usize) -> usize {
 /// and `pos = 7`, `preceding(bytes, pos, b'\n', 0)` returns `4` (as does `pos
 /// = 8`) and `preceding(bytes, pos, `b'\n', 1)` returns `0`.
 fn preceding_by_pos(
-    bytes: &[u8],
+    bytes: &BStr,
     mut pos: usize,
     line_term: u8,
     mut count: usize,
@@ -180,7 +182,7 @@ fn preceding_by_pos(
         pos -= 1;
     }
     loop {
-        match memrchr(line_term, &bytes[..pos]) {
+        match bytes[..pos].rfind_byte(line_term) {
             None => {
                 return 0;
             }
@@ -201,7 +203,10 @@ fn preceding_by_pos(
 mod tests {
     use std::ops::Range;
     use std::str;
+
+    use bstr::B;
     use grep_matcher::Match;
+
     use super::*;
 
     const SHERLOCK: &'static str = "\
@@ -220,7 +225,7 @@ and exhibited clearly, with a label attached.\
     fn lines(text: &str) -> Vec<&str> {
         let mut results = vec![];
         let mut it = LineStep::new(b'\n', 0, text.len());
-        while let Some(m) = it.next_match(text.as_bytes()) {
+        while let Some(m) = it.next_match(B(text)) {
             results.push(&text[m]);
         }
         results
@@ -229,26 +234,26 @@ and exhibited clearly, with a label attached.\
     fn line_ranges(text: &str) -> Vec<Range<usize>> {
         let mut results = vec![];
         let mut it = LineStep::new(b'\n', 0, text.len());
-        while let Some(m) = it.next_match(text.as_bytes()) {
+        while let Some(m) = it.next_match(B(text)) {
             results.push(m.start()..m.end());
         }
         results
     }
 
     fn prev(text: &str, pos: usize, count: usize) -> usize {
-        preceding_by_pos(text.as_bytes(), pos, b'\n', count)
+        preceding_by_pos(B(text), pos, b'\n', count)
     }
 
     fn loc(text: &str, start: usize, end: usize) -> Match {
-        locate(text.as_bytes(), b'\n', Match::new(start, end))
+        locate(B(text), b'\n', Match::new(start, end))
     }
 
     #[test]
     fn line_count() {
-        assert_eq!(0, count(b"", b'\n'));
-        assert_eq!(1, count(b"\n", b'\n'));
-        assert_eq!(2, count(b"\n\n", b'\n'));
-        assert_eq!(2, count(b"a\nb\nc", b'\n'));
+        assert_eq!(0, count(B(""), b'\n'));
+        assert_eq!(1, count(B("\n"), b'\n'));
+        assert_eq!(2, count(B("\n\n"), b'\n'));
+        assert_eq!(2, count(B("a\nb\nc"), b'\n'));
     }
 
     #[test]
@@ -331,7 +336,7 @@ and exhibited clearly, with a label attached.\
     #[test]
     fn preceding_lines_doc() {
         // These are the examples mentions in the documentation of `preceding`.
-        let bytes = b"abc\nxyz\n";
+        let bytes = B("abc\nxyz\n");
         assert_eq!(4, preceding_by_pos(bytes, 7, b'\n', 0));
         assert_eq!(4, preceding_by_pos(bytes, 8, b'\n', 0));
         assert_eq!(0, preceding_by_pos(bytes, 7, b'\n', 1));

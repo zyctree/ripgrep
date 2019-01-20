@@ -1,7 +1,9 @@
 use std::cmp;
 use std::io;
 
+use bstr::BStr;
 use grep_matcher::Matcher;
+
 use lines::{self, LineStep};
 use line_buffer::{DEFAULT_BUFFER_CAPACITY, LineBufferReader};
 use sink::{Sink, SinkError};
@@ -77,14 +79,14 @@ where M: Matcher,
 pub struct SliceByLine<'s, M: 's, S> {
     config: &'s Config,
     core: Core<'s, M, S>,
-    slice: &'s [u8],
+    slice: &'s BStr,
 }
 
 impl<'s, M: Matcher, S: Sink> SliceByLine<'s, M, S> {
     pub fn new(
         searcher: &'s Searcher,
         matcher: M,
-        slice: &'s [u8],
+        slice: &'s BStr,
         write_to: S,
     ) -> SliceByLine<'s, M, S> {
         debug_assert!(!searcher.multi_line_with_matcher(&matcher));
@@ -127,7 +129,7 @@ impl<'s, M: Matcher, S: Sink> SliceByLine<'s, M, S> {
 pub struct MultiLine<'s, M: 's, S> {
     config: &'s Config,
     core: Core<'s, M, S>,
-    slice: &'s [u8],
+    slice: &'s BStr,
     last_match: Option<Range>,
 }
 
@@ -135,7 +137,7 @@ impl<'s, M: Matcher, S: Sink> MultiLine<'s, M, S> {
     pub fn new(
         searcher: &'s Searcher,
         matcher: M,
-        slice: &'s [u8],
+        slice: &'s BStr,
         write_to: S,
     ) -> MultiLine<'s, M, S> {
         debug_assert!(searcher.multi_line_with_matcher(&matcher));
@@ -306,7 +308,8 @@ impl<'s, M: Matcher, S: Sink> MultiLine<'s, M, S> {
     }
 
     fn find(&mut self) -> Result<Option<Range>, S::Error> {
-        match self.core.matcher().find(&self.slice[self.core.pos()..]) {
+        let haystack = &self.slice[self.core.pos()..];
+        match self.core.matcher().find(haystack.as_bytes()) {
             Err(err) => Err(S::Error::error_message(err)),
             Ok(None) => Ok(None),
             Ok(Some(m)) => Ok(Some(m.offset(self.core.pos()))),
