@@ -392,8 +392,8 @@ rgtest!(r428_unrecognized_style, |_: Dir, mut cmd: TestCommand| {
     let output = cmd.cmd().output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     let expected = "\
-unrecognized style attribute ''. Choose from: nobold, bold, nointense, \
-intense, nounderline, underline.
+invalid --colors spec: unrecognized style attribute ''. \
+Choose from: nobold, bold, nointense, intense, nounderline, underline.
 ";
     eqnice!(expected, stderr);
 });

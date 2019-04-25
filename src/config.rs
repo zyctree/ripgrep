@@ -3,7 +3,6 @@
 // argument corresponds precisely to one shell argument.
 
 use std::env;
-use std::error::Error;
 use std::fs::File;
 use std::io;
 use std::ffi::OsString;
@@ -11,8 +10,9 @@ use std::path::{Path, PathBuf};
 
 use bstr::io::BufReadExt;
 use log;
+use snafu::{self, ResultExt};
 
-use crate::Result;
+use crate::err::{self, Error, Result};
 
 /// Return a sequence of arguments derived from ripgrep rc configuration files.
 pub fn args() -> Vec<OsString> {
@@ -55,12 +55,11 @@ pub fn args() -> Vec<OsString> {
 /// for each line in addition to successfully parsed arguments.
 fn parse<P: AsRef<Path>>(
     path: P,
-) -> Result<(Vec<OsString>, Vec<Box<Error>>)> {
+) -> Result<(Vec<OsString>, Vec<Error>)> {
     let path = path.as_ref();
-    match File::open(&path) {
-        Ok(file) => parse_reader(file),
-        Err(err) => Err(From::from(format!("{}: {}", path.display(), err))),
-    }
+    let file = File::open(&path).context(err::ConfigIO { path })?;
+    let res = parse_reader(file).context(err::ConfigIO { path })?;
+    Ok(res)
 }
 
 /// Parse a single ripgrep rc file from the given reader.
@@ -76,10 +75,10 @@ fn parse<P: AsRef<Path>>(
 /// in addition to successfully parsed arguments.
 fn parse_reader<R: io::Read>(
     rdr: R,
-) -> Result<(Vec<OsString>, Vec<Box<Error>>)> {
+) -> io::Result<(Vec<OsString>, Vec<Error>)> {
     let bufrdr = io::BufReader::new(rdr);
     let (mut args, mut errs) = (vec![], vec![]);
-    let mut line_number = 0;
+    let mut line_number = 0u64;
     bufrdr.for_byte_line_with_terminator(|line| {
         line_number += 1;
 
@@ -92,7 +91,11 @@ fn parse_reader<R: io::Read>(
                 args.push(osstr.to_os_string());
             }
             Err(err) => {
-                errs.push(format!("{}: {}", line_number, err).into());
+                let ctx = snafu::Context {
+                    error: err,
+                    context: err::ConfigInvalidUTF8 { line_number },
+                };
+                errs.push(ctx.into());
             }
         }
         Ok(true)

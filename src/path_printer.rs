@@ -2,7 +2,10 @@ use std::io;
 use std::path::Path;
 
 use grep::printer::{ColorSpecs, PrinterPath};
+use snafu::ResultExt;
 use termcolor::WriteColor;
+
+use crate::err::{self, Result};
 
 /// A configuration for describing how paths should be written.
 #[derive(Clone, Debug)]
@@ -87,7 +90,11 @@ pub struct PathPrinter<W> {
 
 impl<W: WriteColor> PathPrinter<W> {
     /// Write the given path to the underlying writer.
-    pub fn write_path(&mut self, path: &Path) -> io::Result<()> {
+    pub fn write_path(&mut self, path: &Path) -> Result<()> {
+        self.write(path).eager_context(err::IO)
+    }
+
+    fn write(&mut self, path: &Path) -> io::Result<()> {
         let ppath = PrinterPath::with_separator(path, self.config.separator);
         if !self.wtr.supports_color() {
             self.wtr.write_all(ppath.as_bytes())?;

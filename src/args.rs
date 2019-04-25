@@ -36,6 +36,7 @@ use ignore::{Walk, WalkBuilder, WalkParallel};
 use log;
 use num_cpus;
 use regex;
+use snafu::{self, ResultExt};
 use termcolor::{
     WriteColor,
     BufferWriter, ColorChoice,
@@ -43,6 +44,7 @@ use termcolor::{
 
 use crate::app;
 use crate::config;
+use crate::err::{self, Result};
 use crate::logger::Logger;
 use crate::messages::{set_messages, set_ignore_messages};
 use crate::path_printer::{PathPrinter, PathPrinterBuilder};
@@ -50,7 +52,6 @@ use crate::search::{
     PatternMatcher, Printer, SearchWorker, SearchWorkerBuilder,
 };
 use crate::subject::SubjectBuilder;
-use crate::Result;
 
 /// The command that ripgrep should execute based on the command line
 /// configuration.
@@ -141,9 +142,7 @@ impl Args {
         set_messages(!early_matches.is_present("no-messages"));
         set_ignore_messages(!early_matches.is_present("no-ignore-messages"));
 
-        if let Err(err) = Logger::init() {
-            return Err(format!("failed to initialize logger: {}", err).into());
-        }
+        Logger::init()?;
         if early_matches.is_present("trace") {
             log::set_max_level(log::LevelFilter::Trace);
         } else if early_matches.is_present("debug") {
@@ -422,13 +421,22 @@ impl SortBy {
         match self.kind {
             SortByKind::None | SortByKind::Path => {}
             SortByKind::LastModified => {
-                env::current_exe()?.metadata()?.modified()?;
+                env::current_exe()
+                    .and_then(|x| x.metadata())
+                    .and_then(|x| x.modified())
+                    .context(err::UnsupportedSortModified)?;
             }
             SortByKind::LastAccessed => {
-                env::current_exe()?.metadata()?.accessed()?;
+                env::current_exe()
+                    .and_then(|x| x.metadata())
+                    .and_then(|x| x.accessed())
+                    .context(err::UnsupportedSortAccess)?;
             }
             SortByKind::Created => {
-                env::current_exe()?.metadata()?.created()?;
+                env::current_exe()
+                    .and_then(|x| x.metadata())
+                    .and_then(|x| x.created())
+                    .context(err::UnsupportedSortCreation)?;
             }
         }
         Ok(())
@@ -611,21 +619,12 @@ impl ArgMatches {
                 Ok(matcher) => return Ok(PatternMatcher::PCRE2(matcher)),
                 Err(err) => err,
             };
-            Err(From::from(format!(
-                "regex could not be compiled with either the default regex \
-                 engine or with PCRE2.\n\n\
-                 default regex engine error:\n{}\n{}\n{}\n\n\
-                 PCRE2 regex engine error:\n{}",
-                 "~".repeat(79), rust_err, "~".repeat(79), pcre_err,
-            )))
+            err::Hybrid {
+                rust_err: Box::new(rust_err),
+                pcre_err: Box::new(pcre_err),
+            }.fail()
         } else {
-            let matcher = match self.matcher_rust(patterns) {
-                Ok(matcher) => matcher,
-                Err(err) => {
-                    return Err(From::from(suggest_pcre2(err.to_string())));
-                }
-            };
-            Ok(PatternMatcher::RustRegex(matcher))
+            Ok(PatternMatcher::RustRegex(self.matcher_rust(patterns)?))
         }
     }
 
@@ -635,11 +634,7 @@ impl ArgMatches {
     /// then this returns an error.
     #[cfg(not(feature = "pcre2"))]
     fn matcher(&self, patterns: &[String]) -> Result<PatternMatcher> {
-        if self.is_present("pcre2") {
-            return Err(From::from(
-                "PCRE2 is not available in this build of ripgrep",
-            ));
-        }
+        snafu::ensure!(!self.is_present("pcre2"), err::PCRE2Unavailable);
         let matcher = self.matcher_rust(patterns)?;
         Ok(PatternMatcher::RustRegex(matcher))
     }
@@ -692,10 +687,7 @@ impl ArgMatches {
             } else {
                 builder.build(&patterns.join("|"))
             };
-        match res {
-            Ok(m) => Ok(m),
-            Err(err) => Err(From::from(suggest_multiline(err.to_string()))),
-        }
+        res.eager_context(err::RustRegex)
     }
 
     /// Build a matcher using PCRE2.
@@ -737,7 +729,7 @@ impl ArgMatches {
         if self.is_present("crlf") {
             builder.crlf(true);
         }
-        Ok(builder.build(&patterns.join("|"))?)
+        Ok(builder.build(&patterns.join("|")).context(err::PCRE2Regex)?)
     }
 
     /// Build a JSON printer that writes results to the given writer.
@@ -987,7 +979,7 @@ impl ArgMatches {
         // Start with a default set of color specs.
         let mut specs = default_color_specs();
         for spec_str in self.values_of_lossy_vec("colors") {
-            specs.push(spec_str.parse()?);
+            specs.push(spec_str.parse().context(err::InvalidColorSpec)?);
         }
         Ok(ColorSpecs::new(&specs))
     }
@@ -1078,7 +1070,8 @@ impl ArgMatches {
             return Ok(EncodingMode::Disabled);
         }
 
-        Ok(EncodingMode::Some(Encoding::new(&label)?))
+        let enc = Encoding::new(&label).context(err::SearchConfig)?;
+        Ok(EncodingMode::Some(enc))
     }
 
     /// Return the file separator to use based on the CLI configuration.
@@ -1267,16 +1260,17 @@ impl ArgMatches {
 
     /// Builds the set of glob overrides from the command line flags.
     fn overrides(&self) -> Result<Override> {
-        let mut builder = OverrideBuilder::new(env::current_dir()?);
+        let cwd = env::current_dir().context(err::CurrentDir)?;
+        let mut builder = OverrideBuilder::new(cwd);
         for glob in self.values_of_lossy_vec("glob") {
-            builder.add(&glob)?;
+            builder.add(&glob).context(err::InvalidGlobFlag)?;
         }
         // This only enables case insensitivity for subsequent globs.
         builder.case_insensitive(true).unwrap();
         for glob in self.values_of_lossy_vec("iglob") {
-            builder.add(&glob)?;
+            builder.add(&glob).context(err::InvalidIGlobFlag)?;
         }
-        Ok(builder.build()?)
+        Ok(builder.build().context(err::GlobBuild)?)
     }
 
     /// Return all file paths that ripgrep should search.
@@ -1330,16 +1324,10 @@ impl ArgMatches {
         };
         if sep.is_empty() {
             Ok(None)
-        } else if sep.len() > 1 {
-            Err(From::from(format!(
-                "A path separator must be exactly one byte, but \
-                 the given separator is {} bytes: {}\n\
-                 In some shells on Windows '/' is automatically \
-                 expanded. Use '//' instead.",
-                 sep.len(),
-                 cli::escape(&sep),
-            )))
         } else {
+            snafu::ensure!(sep.len() == 1, err::InvalidPathSeparator {
+                separator: sep.clone(),
+            });
             Ok(Some(sep[0]))
         }
     }
@@ -1386,17 +1374,17 @@ impl ArgMatches {
         }
         if let Some(paths) = self.values_of_os("file") {
             for path in paths {
-                if path == "-" {
-                    pats.extend(cli::patterns_from_stdin()?
-                        .into_iter()
-                        .map(|p| self.pattern_from_string(p))
-                    );
-                } else {
-                    pats.extend(cli::patterns_from_path(path)?
-                        .into_iter()
-                        .map(|p| self.pattern_from_string(p))
-                    );
-                }
+                let some_pats =
+                    if path == "-" {
+                        cli::patterns_from_stdin()
+                            .context(err::ReadManyPatterns)?
+                    } else {
+                        cli::patterns_from_path(path)
+                            .context(err::ReadManyPatterns)?
+                    };
+                pats.extend(
+                    some_pats.into_iter().map(|p| self.pattern_from_string(p))
+                );
             }
         }
         Ok(pats)
@@ -1417,7 +1405,7 @@ impl ArgMatches {
     ///
     /// If the pattern is not valid UTF-8, then an error is returned.
     fn pattern_from_os_str(&self, pat: &OsStr) -> Result<String> {
-        let s = cli::pattern_from_os(pat)?;
+        let s = cli::pattern_from_os(pat).context(err::ReadOSPattern)?;
         Ok(self.pattern_from_str(s))
     }
 
@@ -1475,11 +1463,12 @@ impl ArgMatches {
     /// flag. If no --pre-globs are available, then this always returns an
     /// empty set of globs.
     fn preprocessor_globs(&self) -> Result<Override> {
-        let mut builder = OverrideBuilder::new(env::current_dir()?);
+        let cwd = env::current_dir().context(err::CurrentDir)?;
+        let mut builder = OverrideBuilder::new(cwd);
         for glob in self.values_of_lossy_vec("pre-glob") {
-            builder.add(&glob)?;
+            builder.add(&glob).context(err::InvalidPreGlob)?;
         }
-        Ok(builder.build()?)
+        Ok(builder.build().context(err::PreGlobBuild)?)
     }
 
     /// Parse the regex-size-limit argument option into a byte count.
@@ -1561,7 +1550,7 @@ impl ArgMatches {
             builder.clear(&ty);
         }
         for def in self.values_of_lossy_vec("type-add") {
-            builder.add_def(&def)?;
+            builder.add_def(&def).context(err::InvalidTypeDefinition)?;
         }
         for ty in self.values_of_lossy_vec("type") {
             builder.select(&ty);
@@ -1569,7 +1558,7 @@ impl ArgMatches {
         for ty in self.values_of_lossy_vec("type-not") {
             builder.negate(&ty);
         }
-        builder.build().map_err(From::from)
+        builder.build().eager_context(err::TypeDefinitionBuild)
     }
 
     /// Returns the number of times the `unrestricted` flag is provided.
@@ -1628,7 +1617,11 @@ impl ArgMatches {
     fn usize_of(&self, name: &str) -> Result<Option<usize>> {
         match self.value_of_lossy(name) {
             None => Ok(None),
-            Some(v) => v.parse().map(Some).map_err(From::from),
+            Some(v) => {
+                v.parse()
+                 .map(Some)
+                 .eager_context(err::InvalidNumber { flag: name.to_string() })
+            }
         }
     }
 
@@ -1636,15 +1629,17 @@ impl ArgMatches {
     ///
     /// If the aforementioned format is not recognized, then this returns an
     /// error.
-    fn parse_human_readable_size(
-        &self,
-        arg_name: &str,
-    ) -> Result<Option<u64>> {
-        let size = match self.value_of_lossy(arg_name) {
-            None => return Ok(None),
-            Some(size) => size,
-        };
-        Ok(Some(cli::parse_human_readable_size(&size)?))
+    fn parse_human_readable_size(&self, name: &str) -> Result<Option<u64>> {
+        match self.value_of_lossy(name) {
+            None => Ok(None),
+            Some(size) => {
+                cli::parse_human_readable_size(&size)
+                    .map(Some)
+                    .eager_context(err::InvalidHumanSize {
+                        flag: name.to_string()
+                    })
+            }
+        }
     }
 }
 
@@ -1678,32 +1673,6 @@ impl ArgMatches {
     }
 }
 
-/// Inspect an error resulting from building a Rust regex matcher, and if it's
-/// believed to correspond to a syntax error that PCRE2 could handle, then
-/// add a message to suggest the use of -P/--pcre2.
-#[cfg(feature = "pcre2")]
-fn suggest_pcre2(msg: String) -> String {
-    if !msg.contains("backreferences") && !msg.contains("look-around") {
-        msg
-    } else {
-        format!("{}
-
-Consider enabling PCRE2 with the --pcre2 flag, which can handle backreferences
-and look-around.", msg)
-    }
-}
-
-fn suggest_multiline(msg: String) -> String {
-    if msg.contains("the literal") && msg.contains("not allowed") {
-        format!("{}
-
-Consider enabling multiline mode with the --multiline flag (or -U for short).
-When multiline mode is enabled, new line characters can be matched.", msg)
-    } else {
-        msg
-    }
-}
-
 /// Convert the result of parsing a human readable file size to a `usize`,
 /// failing if the type does not fit.
 fn u64_to_usize(
@@ -1716,11 +1685,14 @@ fn u64_to_usize(
         None => return Ok(None),
         Some(value) => value,
     };
-    if value <= usize::MAX as u64 {
-        Ok(Some(value as usize))
-    } else {
-        Err(From::from(format!("number too large for {}", arg_name)))
-    }
+    snafu::ensure!(
+        value <= usize::MAX as u64,
+        err::NumberTooBig {
+            flag: arg_name.to_string(),
+            limit: usize::MAX as u64,
+        }
+    );
+    Ok(Some(value as usize))
 }
 
 /// Builds a comparator for sorting two files according to a system time
@@ -1768,7 +1740,7 @@ where I: IntoIterator<Item=T>,
         Err(err) => err,
     };
     if err.use_stderr() {
-        return Err(err.into());
+        return Err(snafu::Context { error: err, context: err::Clap }.into());
     }
     // Explicitly ignore any error returned by write!. The most likely error
     // at this point is a broken pipe error, in which case, we want to ignore

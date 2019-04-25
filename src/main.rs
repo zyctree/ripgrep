@@ -1,11 +1,15 @@
+#![allow(warnings)]
+
 use std::io::{self, Write};
 use std::process;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use ignore::WalkState;
+use snafu::ResultExt;
 
 use args::Args;
+use err::Result;
 use subject::Subject;
 
 #[macro_use]
@@ -14,6 +18,7 @@ mod messages;
 mod app;
 mod args;
 mod config;
+mod err;
 mod logger;
 mod path_printer;
 mod search;
@@ -42,7 +47,8 @@ mod subject;
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-type Result<T> = ::std::result::Result<T, Box<::std::error::Error>>;
+// type Result<T> = ::std::result::Result<T, Box<::std::error::Error>>;
+// type Result<T> =
 
 fn main() {
     if let Err(err) = Args::parse().and_then(try_main) {
@@ -213,12 +219,12 @@ fn files(args: &Args) -> Result<bool> {
         }
         if let Err(err) = path_printer.write_path(subject.path()) {
             // A broken pipe means graceful termination.
-            if err.kind() == io::ErrorKind::BrokenPipe {
+            if err.is_broken_pipe() {
                 break;
             }
             // Otherwise, we have some other error that's preventing us from
             // writing to stdout, so we should bubble it up.
-            return Err(err.into());
+            return Err(err);
         }
     }
     Ok(matched)
@@ -239,7 +245,7 @@ fn files_parallel(args: &Args) -> Result<bool> {
     let matched = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<Subject>();
 
-    let print_thread = thread::spawn(move || -> io::Result<()> {
+    let print_thread = thread::spawn(move || -> Result<()> {
         for subject in rx.iter() {
             path_printer.write_path(subject.path())?;
         }
@@ -271,8 +277,8 @@ fn files_parallel(args: &Args) -> Result<bool> {
         // A broken pipe means graceful termination, so fall through.
         // Otherwise, something bad happened while writing to stdout, so bubble
         // it up.
-        if err.kind() != io::ErrorKind::BrokenPipe {
-            return Err(err.into());
+        if !err.is_broken_pipe() {
+            return Err(err);
         }
     }
     Ok(matched.load(SeqCst))
@@ -280,22 +286,29 @@ fn files_parallel(args: &Args) -> Result<bool> {
 
 /// The top-level entry point for --type-list.
 fn types(args: &Args) -> Result<bool> {
+    write_types(args.stdout(), &args.type_defs()?)
+        .eager_context(err::WriteTypes)
+}
+
+fn write_types<W: io::Write>(
+    mut wtr: W,
+    defs: &[ignore::types::FileTypeDef],
+) -> io::Result<bool> {
     let mut count = 0;
-    let mut stdout = args.stdout();
-    for def in args.type_defs()? {
+    for def in defs {
         count += 1;
-        stdout.write_all(def.name().as_bytes())?;
-        stdout.write_all(b": ")?;
+        wtr.write_all(def.name().as_bytes())?;
+        wtr.write_all(b": ")?;
 
         let mut first = true;
         for glob in def.globs() {
             if !first {
-                stdout.write_all(b", ")?;
+                wtr.write_all(b", ")?;
             }
-            stdout.write_all(glob.as_bytes())?;
+            wtr.write_all(glob.as_bytes())?;
             first = false;
         }
-        stdout.write_all(b"\n")?;
+        wtr.write_all(b"\n")?;
     }
     Ok(count > 0)
 }
@@ -303,7 +316,7 @@ fn types(args: &Args) -> Result<bool> {
 /// The top-level entry point for --pcre2-version.
 fn pcre2_version(args: &Args) -> Result<bool> {
     #[cfg(feature = "pcre2")]
-    fn imp(args: &Args) -> Result<bool> {
+    fn imp(args: &Args) -> io::Result<bool> {
         use grep::pcre2;
 
         let mut stdout = args.stdout();
@@ -318,11 +331,11 @@ fn pcre2_version(args: &Args) -> Result<bool> {
     }
 
     #[cfg(not(feature = "pcre2"))]
-    fn imp(args: &Args) -> Result<bool> {
+    fn imp(args: &Args) -> io::Result<bool> {
         let mut stdout = args.stdout();
         writeln!(stdout, "PCRE2 is not available in this build of ripgrep.")?;
         Ok(false)
     }
 
-    imp(args)
+    imp(args).eager_context(err::PCRE2Version)
 }

@@ -4,6 +4,9 @@
 // for this functionality.
 
 use log::{self, Log};
+use snafu::ResultExt;
+
+use crate::err::{self, Result};
 
 /// The simplest possible logger that logs to stderr.
 ///
@@ -18,8 +21,8 @@ impl Logger {
     /// Create a new logger that logs to stderr and initialize it as the
     /// global logger. If there was a problem setting the logger, then an
     /// error is returned.
-    pub fn init() -> Result<(), log::SetLoggerError> {
-        log::set_logger(LOGGER)
+    pub fn init() -> Result<()> {
+        log::set_logger(LOGGER).eager_context(err::LoggerInit)
     }
 }
 
