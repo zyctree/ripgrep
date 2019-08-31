@@ -1,3 +1,4 @@
+# test
 name: ci
 on:
   pull_request:
@@ -5,7 +6,7 @@ on:
     branches:
     - master
   schedule:
-    cron: '00 01 * * *'
+    - cron: '00 01 * * *'
 jobs:
   test:
     name: test
@@ -85,10 +86,10 @@ jobs:
         rust-version: ${{ matrix.rust }}
     - name: Install Rust Target
       run: rustup target add ${{ matrix.target }}
-    - name: Install musl-gcc
-      if: contains(matrix.target, 'musl')
-      run: |
-        apt-get install musl-tools
+    # - name: Install musl-gcc
+      # if: contains(matrix.target, 'musl')
+      # run: |
+        # apt-get install musl-tools
     - name: Build everything
       run: cargo build --verbose --target ${{ matrix.target }} --all --features pcre2
     - name: Test zsh auto-completions
