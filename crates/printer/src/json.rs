@@ -644,6 +644,15 @@ impl<'p, 's, M: Matcher, W: io::Write> JSONSink<'p, 's, M, W> {
         self.after_context_remaining == 0
     }
 
+
+    fn match_more_than_limit(&self) -> bool {
+        let limit = match self.json.config.max_matches {
+            None => return false,
+            Some(limit) => limit,
+        };
+        self.match_count > limit
+    }
+
     /// Write the "begin" message.
     fn write_begin_message(&mut self) -> io::Result<()> {
         if self.begin_printed {
@@ -667,7 +676,13 @@ impl<'p, 's, M: Matcher, W: io::Write> Sink for JSONSink<'p, 's, M, W> {
         self.write_begin_message()?;
 
         self.match_count += 1;
-        self.after_context_remaining = searcher.after_context() as u64;
+        if self.match_more_than_limit() {
+            self.after_context_remaining =
+                self.after_context_remaining.saturating_sub(1);
+        } else {
+            self.after_context_remaining = searcher.after_context() as u64;
+        }
+
         self.record_matches(mat.bytes())?;
         self.stats.add_matches(self.json.matches.len() as u64);
         self.stats.add_matched_lines(mat.lines().count() as u64);
