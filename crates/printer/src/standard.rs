@@ -722,6 +722,14 @@ impl<'p, 's, M: Matcher, W: WriteColor> StandardSink<'p, 's, M, W> {
         }
         self.after_context_remaining == 0
     }
+
+    fn match_more_than_limit(&self) -> bool {
+        let limit = match self.standard.config.max_matches {
+            None => return false,
+            Some(limit) => limit,
+        };
+        self.match_count > limit
+    }
 }
 
 impl<'p, 's, M: Matcher, W: WriteColor> Sink for StandardSink<'p, 's, M, W> {
@@ -733,7 +741,12 @@ impl<'p, 's, M: Matcher, W: WriteColor> Sink for StandardSink<'p, 's, M, W> {
         mat: &SinkMatch,
     ) -> Result<bool, io::Error> {
         self.match_count += 1;
-        self.after_context_remaining = searcher.after_context() as u64;
+        if self.match_more_than_limit() {
+            self.after_context_remaining =
+                self.after_context_remaining.saturating_sub(1);
+        } else {
+            self.after_context_remaining = searcher.after_context() as u64;
+        }
 
         self.record_matches(mat.bytes())?;
         self.replace(mat.bytes())?;
